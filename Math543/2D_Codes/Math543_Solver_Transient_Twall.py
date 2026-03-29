@@ -371,7 +371,12 @@ def make_full_T(T_free_frame):
     Tfull[mirror_index[non_sym_idx]] = Tfull_half[non_sym_idx]
     return Tfull
 
-# -------------------- ANIMATION --------------------
+# -------------------- ANIMATION (per-frame adaptive contours) --------------------
+# Because the system reaches steady state very fast (diffusion time ~ L^2/alpha),
+# a fixed global colorbar would make later frames appear as a single color.
+# Solution: each frame gets its own contour levels (adaptive), and a colorbar
+# that updates to show the current range.
+
 if plot_field == "dT":
     vals_all = [make_full_T(Tf) - Tinf for Tf in T_history]
     field_label = "ΔT (°C)"
@@ -379,16 +384,18 @@ else:
     vals_all = [make_full_T(Tf) for Tf in T_history]
     field_label = "T (°C)"
 
-vmin = min(float(np.min(v)) for v in vals_all)
-vmax = max(float(np.max(v)) for v in vals_all)
-if (vmax - vmin) < 0.5:
-    mid = 0.5 * (vmin + vmax)
-    vmin, vmax = mid - 0.25, mid + 0.25
-
-levels_arr = np.linspace(vmin, vmax, n_levels)
 padx, pady = 0.00015, 0.00010
 
 fig, ax = plt.subplots(figsize=(7.0, 5.6))
+
+# Create a placeholder colorbar from first frame (will be updated per-frame)
+Z0 = vals_all[0]
+zmin0, zmax0 = float(np.min(Z0)), float(np.max(Z0))
+if zmax0 - zmin0 < 1e-6:
+    zmax0 = zmin0 + 1e-6
+cf0 = ax.tricontourf(triang_full, Z0, levels=np.linspace(zmin0, zmax0, n_levels), cmap=cmap)
+cbar = fig.colorbar(cf0, ax=ax, pad=0.03)
+cbar.set_label(field_label)
 
 def update(frame):
     for coll in list(ax.collections): coll.remove()
@@ -396,8 +403,23 @@ def update(frame):
     for txt  in list(ax.texts):       txt.remove()
 
     Z = vals_all[frame]
-    ax.tricontourf(triang_full, Z, levels=levels_arr, cmap=cmap)
-    ax.tricontour(triang_full,  Z, levels=10, linewidths=0.30, alpha=0.6, colors="k")
+    zmin_f = float(np.min(Z))
+    zmax_f = float(np.max(Z))
+
+    # Ensure a visible range even when nearly uniform
+    if (zmax_f - zmin_f) < 1e-6:
+        mid = 0.5 * (zmin_f + zmax_f)
+        zmin_f = mid - 0.5e-6
+        zmax_f = mid + 0.5e-6
+
+    lvl = np.linspace(zmin_f, zmax_f, n_levels)
+
+    cf = ax.tricontourf(triang_full, Z, levels=lvl, cmap=cmap)
+    ax.tricontour(triang_full, Z, levels=10, linewidths=0.30, alpha=0.6, colors="k")
+
+    # Update colorbar to current frame's range
+    cbar.update_normal(cf)
+
     ax.set_aspect("equal")
     ax.set_xlim(-padx, W + padx)
     ax.set_ylim(-pady, H + pady)
@@ -405,18 +427,11 @@ def update(frame):
     ax.grid(True, alpha=0.2)
     ax.set_title(f"{field_label} — full domain  t = {times_anim[frame]:.2f} s  "
                  f"(T_wall={T_wall}°C)")
-    Zdata = Z
     ax.text(0.02, 0.98,
-            f"min={float(np.min(Zdata)):.3f}\nmax={float(np.max(Zdata)):.3f}",
+            f"min={zmin_f:.4f}\nmax={zmax_f:.4f}\nΔ={zmax_f - zmin_f:.4f}",
             transform=ax.transAxes, va="top", ha="left", fontsize=10,
             bbox=dict(facecolor="white", alpha=0.75, edgecolor="none"))
     return []
-
-# Initial draw + colorbar
-Z0 = vals_all[0]
-cf0 = ax.tricontourf(triang_full, Z0, levels=levels_arr, cmap=cmap)
-cbar = fig.colorbar(cf0, ax=ax, pad=0.03)
-cbar.set_label(field_label)
 
 ani = animation.FuncAnimation(fig, update, frames=len(T_history),
                                interval=gif_interval, blit=False)

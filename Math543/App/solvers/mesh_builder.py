@@ -4,25 +4,19 @@ import gmsh
 from .params import GeometryParams, MeshParams, MeshResult
 
 
-_gmsh_initialized = False
-
 def ensure_gmsh_initialized():
-    """Initialize gmsh ONCE from the main thread. Must be called before
-    any mesh building (which may run in a worker thread)."""
-    global _gmsh_initialized
-    if not _gmsh_initialized:
-        try:
-            gmsh.finalize()
-        except Exception:
-            pass
-        gmsh.initialize()
-        gmsh.option.setNumber("General.Terminal", 0)
-        _gmsh_initialized = True
+    """Initialize (or re-initialize) gmsh from the main thread.
+    Must be called before spawning any mesh worker thread."""
+    try:
+        gmsh.finalize()
+    except Exception:
+        pass
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
 
 
 def _init_gmsh(model_name):
-    """Prepare gmsh for a new model. Assumes gmsh is already initialized."""
-    gmsh.clear()
+    """Add a new model. gmsh must already be initialized (done in main thread)."""
     gmsh.model.add(model_name)
 
 

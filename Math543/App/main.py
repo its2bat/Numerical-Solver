@@ -945,6 +945,11 @@ class MainWindow(QMainWindow):
         self.mesh_result = None
         self.btn_next.setEnabled(False)
 
+        # Re-initialize gmsh in main thread before every mesh run
+        # (signal handlers require main thread; gmsh.clear() is unreliable in threads)
+        from solvers.mesh_builder import ensure_gmsh_initialized
+        ensure_gmsh_initialized()
+
         self._worker = MeshWorker(is_3d, geom, mp)
         self._worker.log_signal.connect(self.page_mesh.console.log)
         self._worker.finished.connect(self._on_mesh_done)
@@ -1186,12 +1191,19 @@ class MainWindow(QMainWindow):
         if not folder:
             return
 
-        self.page_results.console.log("Generating animation GIF ...")
+        self.page_results.console.log("Generating animation GIF (frame by frame) ...")
         QApplication.processEvents()
 
         try:
+            import io
+            from PIL import Image
+            import matplotlib
             import matplotlib.pyplot as plt
-            import matplotlib.animation as animation
+
+            # Use Agg backend for off-screen rendering — avoids Qt event loop conflict
+            prev_backend = matplotlib.get_backend()
+            matplotlib.use("Agg")
+
             r = self.solve_result
             geom, _, bc, _, _ = self.page_params.get_params()
 
@@ -1202,62 +1214,82 @@ class MainWindow(QMainWindow):
 
             vals_all = [r._make_full_T(tf) for tf in r.T_history]
             n_levels = 50
-            xc, R_tube, R_paste = geom.xc, geom.R_tube, geom.R_paste
+            xc = geom.xc
+            R_tube, R_paste = geom.R_tube, geom.R_paste
             W, H = geom.W, geom.H
             pad = 0.00015
-
             theta_top = np.linspace(0, np.pi, 400)
             theta_bot = np.linspace(-np.pi, 0, 400)
+            n_frames = len(vals_all)
 
-            fig, ax = plt.subplots(figsize=(7.0, 6.0))
-            Z0 = vals_all[0]
-            zmin0, zmax0 = float(np.min(Z0)), float(np.max(Z0))
-            if zmax0 - zmin0 < 1e-6:
-                zmax0 = zmin0 + 1e-6
-            cf0 = ax.tricontourf(triang, Z0,
-                                  levels=np.linspace(zmin0, zmax0, n_levels),
-                                  cmap="turbo")
-            cbar = fig.colorbar(cf0, ax=ax, pad=0.03)
-            cbar.set_label("T (C)")
+            pil_frames = []
+            for i, Z in enumerate(vals_all):
+                fig, ax = plt.subplots(figsize=(7.0, 6.0), dpi=120)
+                fig.patch.set_facecolor("#1e1e1e")
+                ax.set_facecolor("#1e1e1e")
 
-            def update(frame):
-                for coll in list(ax.collections):
-                    coll.remove()
-                for line_ in list(ax.lines):
-                    line_.remove()
-                for txt in list(ax.texts):
-                    txt.remove()
-                Z = vals_all[frame]
                 zf_min, zf_max = float(np.min(Z)), float(np.max(Z))
                 if zf_max - zf_min < 1e-6:
                     mid = 0.5 * (zf_min + zf_max)
                     zf_min, zf_max = mid - 0.5e-6, mid + 0.5e-6
                 lvl = np.linspace(zf_min, zf_max, n_levels)
+
                 cf = ax.tricontourf(triang, Z, levels=lvl, cmap="turbo")
+                cbar = fig.colorbar(cf, ax=ax, pad=0.03)
+                cbar.set_label("T (°C)", color="#ccc")
+                cbar.ax.yaxis.set_tick_params(color="#ccc")
+                plt.setp(cbar.ax.yaxis.get_ticklabels(), color="#ccc")
+
                 for rv in [R_tube, R_paste]:
                     ax.plot(xc + rv * np.cos(theta_top),
                             rv * np.sin(theta_top), "w--", lw=0.8, alpha=0.7)
                 ax.plot(xc + R_tube * np.cos(theta_bot),
                         R_tube * np.sin(theta_bot), "w--", lw=0.8, alpha=0.7)
-                cbar.update_normal(cf)
+
                 ax.set_aspect("equal")
                 ax.set_xlim(-pad, W + pad)
                 ax.set_ylim(-R_tube - pad, H + pad)
-                ax.set_xlabel("x (m)")
-                ax.set_ylabel("y (m)")
-                ax.set_title(f"T  t={r.times_anim[frame]:.2f}s")
-                ax.grid(True, alpha=0.2)
-                return []
+                ax.set_xlabel("x (m)", color="#ccc")
+                ax.set_ylabel("y (m)", color="#ccc")
+                ax.tick_params(colors="#ccc")
+                ax.set_title(f"T (°C)   t = {r.times_anim[i]:.3f} s   "
+                             f"[{i+1}/{n_frames}]", color="#ddd")
+                ax.grid(True, alpha=0.2, color="#444")
+                for sp in ax.spines.values():
+                    sp.set_color("#555")
 
-            ani = animation.FuncAnimation(fig, update, frames=len(vals_all),
-                                           interval=120, blit=False)
+                fig.tight_layout()
+
+                # Render to PIL Image via in-memory buffer
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", facecolor=fig.get_facecolor())
+                buf.seek(0)
+                pil_frames.append(Image.open(buf).copy())
+                buf.close()
+                plt.close(fig)
+
+                if (i + 1) % 5 == 0 or i == n_frames - 1:
+                    self.page_results.console.log(
+                        f"  Rendered frame {i+1}/{n_frames}")
+                    QApplication.processEvents()
+
+            # Restore previous backend
+            matplotlib.use(prev_backend)
+
+            # Save as GIF with PIL
             gif_path = os.path.join(folder, "transient_animation.gif")
-            ani.save(gif_path, writer="pillow", dpi=180)
-            plt.close(fig)
-            self.page_results.console.log(f"GIF saved: {gif_path}")
-            QMessageBox.information(self, "GIF Saved", f"Animation saved to:\n{gif_path}")
+            pil_frames[0].save(
+                gif_path, save_all=True,
+                append_images=pil_frames[1:],
+                duration=120, loop=0, optimize=False
+            )
+            self.page_results.console.log(f"GIF saved: {gif_path}  ({n_frames} frames)")
+            QMessageBox.information(self, "GIF Saved",
+                                    f"Animation saved!\n{gif_path}\n{n_frames} frames")
+
         except Exception as e:
-            self.page_results.console.log(f"GIF Error: {e}")
+            import traceback
+            self.page_results.console.log(f"GIF Error: {traceback.format_exc()}")
             QMessageBox.critical(self, "GIF Error", str(e))
 
 
@@ -1337,10 +1369,6 @@ def main():
         QMessageBox { background-color: #2a2a2a; }
         QMessageBox QLabel { color: #ddd; }
     """)
-
-    # Initialize gmsh in main thread (signal handlers require main thread)
-    from solvers.mesh_builder import ensure_gmsh_initialized
-    ensure_gmsh_initialized()
 
     window = MainWindow()
     window.show()

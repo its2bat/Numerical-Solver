@@ -1,5 +1,5 @@
 # ================================================================
-# Math 543 – BVP Project
+# FEM Heat Transfer – BVP Project
 # TRANSIENT 2D FEM — 3-MATERIAL MODEL — FULL TUBE
 #
 # Physical setup (half-domain, symmetry at x = W/2):

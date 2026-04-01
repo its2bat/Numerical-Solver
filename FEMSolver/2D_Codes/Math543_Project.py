@@ -1,5 +1,5 @@
 # ================================================================
-# Math 543 – Boundary Value Problems Project
+# FEM Heat Transfer – Boundary Value Problems Project
 # FIGURE 1: Problem statement (NO SOLUTION)
 #
 # Geometry (half-domain by symmetry):

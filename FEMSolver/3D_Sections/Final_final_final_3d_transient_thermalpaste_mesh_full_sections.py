@@ -1,6 +1,6 @@
 # ================================================================
-# Math 543 – BVP Project
-# STEADY 3D HEAT CONDUCTION (FEM) with THERMAL PASTE LAYER
+# FEM Heat Transfer – BVP Project
+# TRANSIENT 3D HEAT CONDUCTION (FEM) with THERMAL PASTE LAYER
 # FULL mirrored model + interactive CLIP + SLICE on X/Y/Z via PyVista
 #
 # Window order:
@@ -10,20 +10,17 @@
 #        - Body colored by T with T scalar bar
 #        - Slices colored by dT with ONE dT scalar bar (total 2 bars)
 #
-# Robust visualization fixes (NO solid red):
-#   - For whole object, build a CLEAN OUTER surface:
-#         geom = grid.extract_geometry()
-#         surf = geom.extract_surface().clean()
-#     and compute clim from THAT surface.
-#   - For clipped body, compute clim from the clipped BODY surface.
-#   - For slices, compute clim from slice data (or robust percentile).
-#   - Explicit preference="point" everywhere.
+# PDE (transient):
+#   rho c dT/dt - div(k grad T) = 0
 #
-# Solver is steady:   div(k grad T) = 0
 # BCs:
-#   INNER cylinder:  -k dT/dn = q_in        (Neumann flux IN)
-#   OUTER boundary:  -k dT/dn = h (T-Tinf)  (Robin convection)
-#   SYM plane x=xc:   dT/dn = 0             (natural)
+#   INNER cylinder:  -k dT/dn = q_in(t)        (Neumann flux IN)
+#   OUTER boundary:  -k dT/dn = h (T-Tinf)     (Robin convection)
+#   SYM plane x=xc:   dT/dn = 0                (natural Neumann)
+#
+# Time integration (choose):
+#   - Backward Euler (BE):  (M/dt + K) T^{n+1} = f^{n+1} + (M/dt) T^n
+#   - Crank–Nicolson (CN):  (M/dt + 0.5 K) T^{n+1} = (M/dt - 0.5 K) T^n + 0.5(f^{n+1}+f^n)
 #
 # Units:
 #   - Solving is done in SI (meters)
@@ -32,7 +29,7 @@
 
 import numpy as np
 import gmsh
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_matrix, csr_matrix
 from scipy.sparse.linalg import spsolve
 
 # -------------------- PARAMETERS ---------------------
@@ -44,16 +41,33 @@ Lz_mm = 1.0
 cut_diameter_mm = 1.0
 paste_thickness_mm = 0.1
 
-# Materials
+# Materials (conductivity)
 k_s = 16.0   # W/m-K (solid)
 k_p = 6.0    # W/m-K (paste)
+
+# Materials (transient: rho, cp)
+# Choose realistic values for your materials
+rho_s = 8000.0   # kg/m^3
+cp_s  = 500.0    # J/kg-K
+rho_p = 2500.0   # kg/m^3
+cp_p  = 800.0    # J/kg-K
 
 # Convection
 h = 15.0     # W/m^2-K
 Tinf = 25.0  # °C
 
-# Heat flux on inner cylinder
-q_in = 1.0e3 # W/m^2 (scalar)
+# Heat flux on inner cylinder (can be time-varying)
+q_in0 = 1.0e3  # W/m^2 baseline amplitude
+
+# Time settings
+time_scheme = "BE"   # "BE" (Backward Euler) or "CN" (Crank–Nicolson)
+dt = 0.5            # seconds
+t_end = 1000.0          # seconds
+T0 = Tinf            # initial temperature everywhere (°C)
+
+# OPTIONAL flux ramp for stability/realism (CFD-like)
+# ramp_time = 0.0 means step input (instant q_in0).
+ramp_time = 0.5      # seconds (set 0.0 to disable)
 
 # Mesh sizing (meters)
 h_global = 0.06e-3
@@ -65,8 +79,8 @@ nz_layers = 28
 # Curvature sizing
 curv_refine = 25
 
-# Save
-save_vtu_path = r"D:\Me543\3D_Sections\Steady3D_ThermalPaste_full.vtu"
+# Save final VTU (FULL, meters)
+save_vtu_path = r"D:\Me543\3D_Sections\Transient3D_ThermalPaste_full.vtu"
 
 # Visualization
 cmap_name = "turbo"
@@ -105,10 +119,15 @@ if R_out > H + 1e-15:
 if R_out > (W - xc) + 1e-15:
     raise ValueError("Paste outer radius exceeds half-width. Reduce paste thickness or increase W.")
 
-print("=== STEADY 3D RUN (thermal paste) ===")
+rc_s = rho_s * cp_s  # volumetric heat capacity (J/m^3-K)
+rc_p = rho_p * cp_p
+
+print("=== TRANSIENT 3D RUN (thermal paste) ===")
 print(f"W={W_mm}mm, H={H_mm}mm, Lz={Lz_mm}mm")
 print(f"Rin={R_in*1e3:.3f}mm, Rout={R_out*1e3:.3f}mm")
-print(f"k_s={k_s}, k_p={k_p}, h={h}, Tinf={Tinf}, q_in={float(q_in):.3e}")
+print(f"k_s={k_s}, k_p={k_p}, h={h}, Tinf={Tinf}, q_in0={float(q_in0):.3e}")
+print(f"rho_s,cp_s={rho_s},{cp_s} => rc_s={rc_s:.3e}  |  rho_p,cp_p={rho_p},{cp_p} => rc_p={rc_p:.3e}")
+print(f"time: scheme={time_scheme}, dt={dt}, t_end={t_end}, ramp_time={ramp_time}")
 
 
 def safe_finalize():
@@ -125,7 +144,7 @@ def safe_finalize():
 # -------------------- BUILD + MESH (Gmsh OCC) ---------------------
 safe_finalize()
 gmsh.initialize()
-gmsh.model.add("steady3d_paste_occ")
+gmsh.model.add("transient3d_paste_occ")
 
 # Half rectangle: x in [xc, W], y in [0, H]
 rect = gmsh.model.occ.addRectangle(xc, 0.0, 0.0, W - xc, H)
@@ -282,7 +301,7 @@ def mirror_full(P_half, xc_val):
     return P_full, idx_map
 
 
-# -------------------- MESH PREVIEW (1) ---------------------
+# -------------------- PYVISTA PREVIEW (1) ---------------------
 try:
     import pyvista as pv
     HAVE_PV = True
@@ -326,53 +345,74 @@ if HAVE_PV:
     surf_preview = grid_preview.extract_surface().triangulate()
 
     pprev = pv.Plotter()
-    pprev.add_text("1) FULL mesh preview (close -> solve + temperature)", font_size=10)
+    pprev.add_text("1) FULL mesh preview (close -> solve transient + temperature)", font_size=10)
     pprev.add_mesh(surf_preview, show_edges=True, color="white", opacity=1.0)
     pprev.view_isometric()
     pprev.show_grid(xtitle="X (mm)", ytitle="Y (mm)", ztitle="Z (mm)")
     pprev.show()
 
 
-# -------------------- ASSEMBLE STEADY: K T = f ---------------------
+# -------------------- ASSEMBLE: K, M, and time-independent parts ---------------------
 KI, KJ, KV = [], [], []
-f = np.zeros(Nn, dtype=float)
+MI, MJ, MV = [], [], []
 
-def add_tet_conduction(tets, k_mat):
+# f_conv is constant in time (h*Tinf term); f_flux will be assembled per time step from q_in(t)
+f_conv = np.zeros(Nn, dtype=float)
+
+def tet_volume(X4):
+    A = np.array([
+        [1.0, X4[0, 0], X4[0, 1], X4[0, 2]],
+        [1.0, X4[1, 0], X4[1, 1], X4[1, 2]],
+        [1.0, X4[2, 0], X4[2, 1], X4[2, 2]],
+        [1.0, X4[3, 0], X4[3, 1], X4[3, 2]],
+    ], dtype=float)
+    return abs(np.linalg.det(A)) / 6.0
+
+# Consistent mass matrix for linear tet:
+Mloc = np.array([[2, 1, 1, 1],
+                 [1, 2, 1, 1],
+                 [1, 1, 2, 1],
+                 [1, 1, 1, 2]], dtype=float)
+
+def add_tet_conduction_and_mass(tets, k_mat, rc_mat):
     for tet in tets:
         i1, i2, i3, i4 = tet
         X = P[[i1, i2, i3, i4], :]
 
+        # volume
+        V = tet_volume(X)
+        if V <= 0:
+            continue
+
+        # gradients for stiffness
         A = np.array([
             [1.0, X[0, 0], X[0, 1], X[0, 2]],
             [1.0, X[1, 0], X[1, 1], X[1, 2]],
             [1.0, X[2, 0], X[2, 1], X[2, 2]],
             [1.0, X[3, 0], X[3, 1], X[3, 2]],
         ], dtype=float)
-
-        detA = np.linalg.det(A)
-        V = abs(detA) / 6.0
-        if V <= 0:
-            continue
-
         invA = np.linalg.inv(A)
         grads = invA[1:, :].T  # 4x3
+
         Ke = k_mat * V * (grads @ grads.T)
+        Me = rc_mat * (V / 20.0) * Mloc
 
         nodes = [i1, i2, i3, i4]
         for a in range(4):
-            for b_ in range(4):
-                KI.append(nodes[a]); KJ.append(nodes[b_]); KV.append(Ke[a, b_])
+            for b in range(4):
+                KI.append(nodes[a]); KJ.append(nodes[b]); KV.append(Ke[a, b])
+                MI.append(nodes[a]); MJ.append(nodes[b]); MV.append(Me[a, b])
 
 def tri_area(tri):
     a, b, c = tri
     pa, pb, pc_ = P[a], P[b], P[c]
     return 0.5 * np.linalg.norm(np.cross(pb - pa, pc_ - pa))
 
-# Conduction
-add_tet_conduction(tets_solid, k_s)
-add_tet_conduction(tets_paste, k_p)
+# Assemble conduction + mass
+add_tet_conduction_and_mass(tets_solid, k_s, rc_s)
+add_tet_conduction_and_mass(tets_paste, k_p, rc_p)
 
-# Robin on OUTER
+# Robin on OUTER adds to K and to f_conv
 Hloc = np.array([[2, 1, 1],
                  [1, 2, 1],
                  [1, 1, 2]], dtype=float)
@@ -384,28 +424,69 @@ for tri in tri_outer:
     Kh = (h * Atri / 12.0) * Hloc
     fh = (h * Tinf * Atri / 3.0) * np.array([1.0, 1.0, 1.0], dtype=float)
 
-    f[a] += fh[0]; f[b] += fh[1]; f[c] += fh[2]
+    f_conv[a] += fh[0]; f_conv[b] += fh[1]; f_conv[c] += fh[2]
 
     nodes = [a, b, c]
     for i in range(3):
         for j in range(3):
             KI.append(nodes[i]); KJ.append(nodes[j]); KV.append(Kh[i, j])
 
-# Neumann on INNER
-q_in_val = float(np.asarray(q_in).reshape(-1)[0])
-for tri in tri_inner:
-    a, b, c = tri
-    Atri = float(tri_area(tri))
-    fq = (q_in_val * Atri / 3.0)
-    f[a] += fq
-    f[b] += fq
-    f[c] += fq
-
 K = coo_matrix((KV, (KI, KJ)), shape=(Nn, Nn)).tocsr()
+M = coo_matrix((MV, (MI, MJ)), shape=(Nn, Nn)).tocsr()
 
-# Solve
-T = spsolve(K, f)
-print(f"Tmin={T.min():.8f} °C, Tmax={T.max():.8f} °C, span={(T.max()-T.min()):.3e} °C")
+# -------------------- Time-dependent Neumann flux assembly helper ---------------------
+# For inner flux, the spatial integral pattern is the same; only scalar q_in(t) changes.
+# Precompute areas and node triplets for speed.
+inner_tris = tri_inner.copy()
+inner_areas = np.array([tri_area(tri) for tri in inner_tris], dtype=float)
+
+def q_in_time(t):
+    """Flux ramp: 0 -> q_in0 over ramp_time (seconds)."""
+    if ramp_time is None or ramp_time <= 0.0:
+        return float(q_in0)
+    r = min(max(t / ramp_time, 0.0), 1.0)
+    return float(q_in0) * r
+
+def build_f_flux(qval):
+    f_flux = np.zeros(Nn, dtype=float)
+    qval = float(qval)
+    for tri, Atri in zip(inner_tris, inner_areas):
+        a, b, c = tri
+        fq = (qval * float(Atri) / 3.0)
+        f_flux[a] += fq; f_flux[b] += fq; f_flux[c] += fq
+    return f_flux
+
+# -------------------- TRANSIENT SOLVE ---------------------
+Nt = int(np.ceil(t_end / dt))
+print(f"Time steps: Nt={Nt} (dt={dt}, t_end={t_end})")
+
+Tn = np.full(Nn, float(T0), dtype=float)
+
+# Build time-stepping matrices
+if time_scheme.upper() == "BE":
+    A = (M / dt + K).tocsr()
+    # solve loop
+    for n in range(Nt):
+        t_np1 = (n + 1) * dt
+        f_np1 = f_conv + build_f_flux(q_in_time(t_np1))
+        rhs = f_np1 + (M / dt).dot(Tn)
+        Tn = spsolve(A, rhs)
+
+elif time_scheme.upper() == "CN":
+    A = (M / dt + 0.5 * K).tocsr()
+    B = (M / dt - 0.5 * K).tocsr()
+    for n in range(Nt):
+        t_n = n * dt
+        t_np1 = (n + 1) * dt
+        f_n   = f_conv + build_f_flux(q_in_time(t_n))
+        f_np1 = f_conv + build_f_flux(q_in_time(t_np1))
+        rhs = B.dot(Tn) + 0.5 * (f_n + f_np1)
+        Tn = spsolve(A, rhs)
+else:
+    raise ValueError("time_scheme must be 'BE' or 'CN'.")
+
+T = Tn
+print(f"[FINAL @ t={Nt*dt:.3g}s] Tmin={T.min():.8f} °C, Tmax={T.max():.8f} °C, span={(T.max()-T.min()):.3e} °C")
 
 
 # -------------------- BUILD FULL MIRROR FOR OUTPUT + VIS ---------------------
@@ -515,21 +596,15 @@ def robust_clim(vals, use_percentile=True, plo=1.0, phi=99.0, min_span=1e-6, pad
     pad = pad_frac * span
     return (lo - pad, hi + pad)
 
-# NOTE: We will NOT use GRID-based clims for whole-object visualization.
-# We'll compute clims from the ACTUAL displayed surface/objects to avoid "solid red".
-
 # -------------------- (2) Whole-object temperature preview ---------------------
-# Build a clean outer surface and compute clim from it
 geom = grid.extract_geometry()
 surf_all = geom.extract_surface().clean()
 
 T_surf = np.asarray(surf_all.point_data["T"], float)
 T_CLIM_SURF = robust_clim(T_surf, USE_PERCENTILE_CLIM, PCT_LO, PCT_HI, MIN_SPAN, PAD_FRAC)
-print(f"[SURF_ALL] T: min={T_surf.min():.7g}, max={T_surf.max():.7g}")
-print(f"[AUTO clim] T (surf): {T_CLIM_SURF[0]:.7g} .. {T_CLIM_SURF[1]:.7g}")
 
 pT = pv.Plotter()
-pT.add_text("2) Whole object — Temperature T (close -> slicer view)", font_size=10)
+pT.add_text(f"2) Whole object — Temperature T @ t={Nt*dt:.3g}s (close -> slicer view)", font_size=10)
 pT.add_mesh(
     surf_all,
     scalars="T",
@@ -559,7 +634,7 @@ cut_state = {"x": x0, "y": y0, "z": z0}
 invert_flag = (keep_side.lower() != "ge")
 
 p = pv.Plotter()
-p.add_text("3) Slicer view — Body:T + Slices:ΔT", font_size=10)
+p.add_text(f"3) Slicer view — Body:T + Slices:ΔT  (t={Nt*dt:.3g}s)", font_size=10)
 
 body_actor = None
 slice_x_actor = None
@@ -577,7 +652,6 @@ def build_cut_xyz(x_mm, y_mm, z_mm):
     vol = vol.clip(normal=(0, 1, 0), origin=(0.0, float(y_mm), 0.0), invert=invert_flag)
     vol = vol.clip(normal=(0, 0, 1), origin=(0.0, 0.0, float(z_mm)), invert=invert_flag)
 
-    # Body surface from clipped volume, cleaned
     body = vol.extract_geometry().extract_surface().clean()
 
     slx = grid.slice(normal=(1, 0, 0), origin=(float(x_mm), 0.0, 0.0))
@@ -595,7 +669,6 @@ def redraw():
 
     body, slx, sly, slz = build_cut_xyz(x_mm, y_mm, z_mm)
 
-    # remove old actors
     if body_actor is not None:
         p.remove_actor(body_actor)
     if slice_x_actor is not None:
@@ -605,21 +678,18 @@ def redraw():
     if slice_z_actor is not None:
         p.remove_actor(slice_z_actor)
 
-    # --- clim based on ACTUAL displayed objects (prevents solid color) ---
     if body is not None and body.n_points > 0:
         Tb = np.asarray(body.point_data["T"], float)
         T_CLIM_BODY = robust_clim(Tb, USE_PERCENTILE_CLIM, PCT_LO, PCT_HI, MIN_SPAN, PAD_FRAC)
     else:
         T_CLIM_BODY = T_CLIM_SURF
 
-    # For slices, compute dT clim based on X-slice (or fallback)
     if slx is not None and slx.n_points > 0:
         dTx = np.asarray(slx.point_data["dT"], float)
         dT_CLIM = robust_clim(dTx, USE_PERCENTILE_CLIM, PCT_LO, PCT_HI, MIN_SPAN, PAD_FRAC)
     else:
         dT_CLIM = robust_clim(grid.point_data["dT"], USE_PERCENTILE_CLIM, PCT_LO, PCT_HI, MIN_SPAN, PAD_FRAC)
 
-    # Body with T scalar bar
     body_actor = safe_add_mesh(
         body,
         scalars="T",
@@ -632,7 +702,6 @@ def redraw():
         scalar_bar_args={"title": "T (°C)", "fmt": SBAR_FMT},
     )
 
-    # Slices with dT (only one bar)
     slice_x_actor = safe_add_mesh(
         slx,
         scalars="dT",
@@ -671,7 +740,6 @@ def redraw():
         show_scalar_bar=False,
     )
 
-# initial draw
 redraw()
 
 def slider_x(val):

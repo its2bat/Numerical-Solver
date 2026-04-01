@@ -1,5 +1,5 @@
 """
-Math 543 - FEM Heat Transfer Solver
+FEM Heat Transfer Solver
 Desktop application with wizard-style step-by-step interface.
 """
 import sys
@@ -256,7 +256,7 @@ class WelcomePage(QWidget):
         title.setStyleSheet("color: #64B5F6; margin: 20px;")
         layout.addWidget(title)
 
-        subtitle = QLabel("Math 543 BVP Project - Microtube Heat Exchanger")
+        subtitle = QLabel("3-Material Microtube Heat Exchanger — FEM Solver")
         subtitle.setFont(QFont("Segoe UI", 11))
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet("color: #aaa;")
@@ -1000,7 +1000,7 @@ class ResultsPage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Math 543 - FEM Heat Transfer Solver")
+        self.setWindowTitle("FEM Heat Transfer Solver")
         self.setMinimumSize(900, 700)
         self.resize(1050, 780)
 

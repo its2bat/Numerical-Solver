@@ -1,5 +1,5 @@
 # ================================================================
-# Math 543 – BVP Project
+# FEM Heat Transfer – BVP Project
 # TRANSIENT 2D HEAT CONDUCTION (FEM) on Gmsh mesh (half-domain)
 # + Full-domain visualization by symmetry mirroring
 # + Mesh figure(s)

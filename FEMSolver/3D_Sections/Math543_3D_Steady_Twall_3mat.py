@@ -1,5 +1,5 @@
 # ================================================================
-# Math 543 - BVP Project
+# FEM Heat Transfer - BVP Project
 # STEADY 3D FEM - 3-MATERIAL MODEL - FULL TUBE (Dirichlet inner wall)
 #
 # 2D cross-section (same as 2D solver) extruded along Z.

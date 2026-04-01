@@ -1,5 +1,5 @@
 # ================================================================
-# Math 543 – BVP Project
+# FEM Heat Transfer – BVP Project
 # TRANSIENT 3D HEAT CONDUCTION (Linear Tetra FEM) with THERMAL PASTE
 # Half-domain in x (symmetry at x=W/2) + full-domain mirror for viz
 #

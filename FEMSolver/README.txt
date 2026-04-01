@@ -1,4 +1,4 @@
-Run Instructions (Math543 Codes)
+Run Instructions (FEMSolver Codes)
 
 ***Requirements
 - Python 3.x
@@ -6,11 +6,11 @@ Run Instructions (Math543 Codes)
 - Gmsh must be installed and importable from Python (`import gmsh` must work)
 
 ***Files
-- `Math543_Project.py` : problem/geometry setup (no solve)
-- `Math543_Project_Mesh.py` : mesh generation + mesh preview
-- `Math543_Solver.py` : 2D steady solve
-- `Math543_Solver_Transient.py` : 2D transient solve
-- `Math543_Solver_Transient_ThermalPaste.py` : 2D transient with paste layer
+- `FEMSolver_Project.py` : problem/geometry setup (no solve)
+- `FEMSolver_Project_Mesh.py` : mesh generation + mesh preview
+- `FEMSolver_Solver.py` : 2D steady solve
+- `FEMSolver_Solver_Transient.py` : 2D transient solve
+- `FEMSolver_Solver_Transient_ThermalPaste.py` : 2D transient with paste layer
 - `Final_final_final_3d_transient_thermalpaste_mesh_full_sections.py` : 3D transient + mesh preview + full T preview + slicer GUI
 - `Final_final_final_3d_steady_thermalpaste_mesh_full_sections.py` : 3D steady + mesh preview + full T preview + slicer GUI
 

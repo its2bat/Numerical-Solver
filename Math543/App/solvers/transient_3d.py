@@ -38,20 +38,38 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
     K_full = build_sparse(K_rows, K_cols, K_vals, Nn)
     M_full = build_sparse(M_rows, M_cols, M_vals, Nn)
 
-    # Dirichlet partition
-    dir_nodes = np.unique(mesh.tri_dir.ravel())
-    free_mask = np.ones(Nn, dtype=bool)
-    free_mask[dir_nodes] = False
-    free_idx = np.where(free_mask)[0]
-    Nf, Nd = len(free_idx), len(dir_nodes)
+    # Neumann flux on inner cylinder faces (if requested)
+    if bc.bc_inner == "neumann":
+        a, b, c = mesh.tri_dir[:, 0], mesh.tri_dir[:, 1], mesh.tri_dir[:, 2]
+        pa, pb, pc_ = P[a], P[b], P[c]
+        cross = np.cross(pb - pa, pc_ - pa)
+        A_tri = 0.5 * np.sqrt(np.sum(cross**2, axis=1))
+        fq = bc.q_flux * A_tri / 3.0
+        np.add.at(f, a, fq); np.add.at(f, b, fq); np.add.at(f, c, fq)
+        dir_nodes = np.array([], dtype=int)
+        free_idx = np.arange(Nn)
+        Nf = Nn
+        Nd = 0
+        if log:
+            log(f"Neumann BC: q_flux={bc.q_flux} W/m², all nodes free (Nf={Nf})")
+        K_ff = K_full
+        M_ff = M_full
+        f_free_static = f.copy()
+    else:
+        # Dirichlet partition
+        dir_nodes = np.unique(mesh.tri_dir.ravel())
+        free_mask = np.ones(Nn, dtype=bool)
+        free_mask[dir_nodes] = False
+        free_idx = np.where(free_mask)[0]
+        Nf, Nd = len(free_idx), len(dir_nodes)
 
-    if log:
-        log(f"Dirichlet: {Nd}, Free: {Nf}")
+        if log:
+            log(f"Dirichlet: {Nd}, Free: {Nf}")
 
-    K_ff = K_full[free_idx, :][:, free_idx]
-    M_ff = M_full[free_idx, :][:, free_idx]
-    K_fd_g = K_full[free_idx, :][:, dir_nodes] @ np.full(Nd, bc.T_wall)
-    f_free_static = f[free_idx] - K_fd_g
+        K_ff = K_full[free_idx, :][:, free_idx]
+        M_ff = M_full[free_idx, :][:, free_idx]
+        K_fd_g = K_full[free_idx, :][:, dir_nodes] @ np.full(Nd, bc.T_wall)
+        f_free_static = f[free_idx] - K_fd_g
 
     dt = sp.dt
     A_ff = (M_ff / dt) + K_ff
@@ -67,10 +85,25 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
     Tn_free = np.full(Nf, bc.T0, dtype=float)
     n_max = int(round(sp.t_end / dt))
 
+    # Animation capture schedule (coarser than 2D due to larger mesh)
+    t_dense_end = min(2.0, sp.t_end)
+    dt_dense  = max(dt * 5, 0.1)
+    dt_coarse = max(dt * 20, 1.0)
+    _anim_targets = np.concatenate([
+        np.arange(0.0, t_dense_end + 1e-12, dt_dense),
+        np.arange(t_dense_end + dt_coarse, sp.t_end + 1e-12, dt_coarse)
+    ])
+    anim_set = set(int(round(ta / dt)) for ta in _anim_targets)
+    anim_set.add(0)
+
+    T_history = []
+    times_anim = []
     tmax_list = []
     times_list = []
+    dT_hist_list = []
     converged = False
     conv_step = -1
+    last_dT = float('inf')
 
     if log:
         log(f"Time stepping: up to {n_max} steps ...")
@@ -78,13 +111,20 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
     t_start = timer.time()
     for n in range(n_max + 1):
         t = n * dt
-        Tn_full = np.full(Nn, bc.T_wall, dtype=float)
-        Tn_full[free_idx] = Tn_free
-        tmax_list.append(Tn_full.max())
+        if bc.bc_inner == "neumann":
+            Tn_full_snap = Tn_free.copy()
+        else:
+            Tn_full_snap = np.full(Nn, bc.T_wall, dtype=float)
+            Tn_full_snap[free_idx] = Tn_free
+        tmax_list.append(Tn_full_snap.max())
         times_list.append(t)
 
+        if n in anim_set:
+            T_history.append(Tn_free.copy())
+            times_anim.append(t)
+
         if progress and n % 10 == 0:
-            progress(n, n_max, 0.0, tmax_list[-1])
+            progress(n, n_max, last_dT, tmax_list[-1])
 
         if n == n_max:
             break
@@ -92,15 +132,22 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
         rhs = f_free_static + (M_ff / dt) @ Tn_free
         Tn_free_new = solve_A(rhs)
         dT_max = np.max(np.abs(Tn_free_new - Tn_free))
+        last_dT = float(dT_max)
+        dT_hist_list.append(last_dT)
         Tn_free = Tn_free_new
 
         if dT_max < sp.conv_tol and n > 0:
             conv_step = n + 1
             t_conv = (n + 1) * dt
-            Tn_full = np.full(Nn, bc.T_wall, dtype=float)
-            Tn_full[free_idx] = Tn_free
-            tmax_list.append(Tn_full.max())
+            if bc.bc_inner == "neumann":
+                Tn_full_snap = Tn_free.copy()
+            else:
+                Tn_full_snap = np.full(Nn, bc.T_wall, dtype=float)
+                Tn_full_snap[free_idx] = Tn_free
+            tmax_list.append(Tn_full_snap.max())
             times_list.append(t_conv)
+            T_history.append(Tn_free.copy())
+            times_anim.append(t_conv)
             converged = True
             elapsed = timer.time() - t_start
             if log:
@@ -111,8 +158,11 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
     tmax_hist = np.array(tmax_list)
     times_arr = np.array(times_list)
 
-    Tn_full = np.full(Nn, bc.T_wall, dtype=float)
-    Tn_full[free_idx] = Tn_free
+    if bc.bc_inner == "neumann":
+        Tn_full = Tn_free.copy()
+    else:
+        Tn_full = np.full(Nn, bc.T_wall, dtype=float)
+        Tn_full[free_idx] = Tn_free
 
     info = (f"T_min={Tn_full.min():.4f}C, T_max={Tn_full.max():.4f}C\n"
             f"{'Converged' if converged else 'Not converged'} "
@@ -123,10 +173,25 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
     # Mirror
     P_full, T_full, tets_full = mirror_3d(P, Tn_full, mesh.all_tets, geom.xc)
 
-    return SolveResult(
+    # make_full_T helper for GIF generation (half-domain T_free → full Tn_full)
+    if bc.bc_inner == "neumann":
+        def make_full_T(T_free_frame):
+            return T_free_frame.copy()
+    else:
+        def make_full_T(T_free_frame):
+            Th = np.full(Nn, bc.T_wall, dtype=float)
+            Th[free_idx] = T_free_frame
+            return Th
+
+    result = SolveResult(
         T=Tn_full, T_full=T_full, coords_full=P_full, tets_full=tets_full,
         T_min=Tn_full.min(), T_max=Tn_full.max(), q_in=0.0,
         tmax_hist=tmax_hist, times_arr=times_arr,
         converged=converged, conv_step=conv_step,
+        T_history=T_history, times_anim=times_anim,
+        dT_hist=np.array(dT_hist_list) if dT_hist_list else None,
         info=info
     )
+    result._make_full_T = make_full_T
+    result._free_idx = free_idx
+    return result

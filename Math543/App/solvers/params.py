@@ -72,6 +72,8 @@ class BCParams:
     h_conv: float = 15.0
     Tinf: float = 25.0
     T0: float = 25.0       # transient IC
+    bc_inner: str = "dirichlet"   # "dirichlet" or "neumann"
+    q_flux: float = 1000.0        # W/m² heat flux (Neumann only)
 
 
 @dataclass
@@ -132,4 +134,5 @@ class SolveResult:
     conv_step: int = -1
     T_history: list = field(default_factory=list)
     times_anim: list = field(default_factory=list)
+    dT_hist: object = None   # residual history for convergence plot
     info: str = ""

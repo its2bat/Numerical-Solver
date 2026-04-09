@@ -304,6 +304,22 @@ class WelcomePage(QWidget):
         self.dim_group.buttonClicked.connect(lambda: self._update_desc())
         self.type_group.buttonClicked.connect(lambda: self._update_desc())
 
+        # ── Solid Mechanics launcher ──────────────────────────────────────
+        layout.addSpacing(20)
+        sep_lbl = QLabel("─── Other Modules ───")
+        sep_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sep_lbl.setStyleSheet("color: #666;")
+        layout.addWidget(sep_lbl)
+
+        self.btn_solid = QPushButton("Open Solid Mechanics / Beam Analysis")
+        self.btn_solid.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.btn_solid.setMinimumHeight(40)
+        self.btn_solid.setStyleSheet(
+            "QPushButton { background-color: #2E7D32; color: white; "
+            "border-radius: 5px; padding: 8px 20px; }"
+            "QPushButton:hover { background-color: #1B5E20; }")
+        layout.addWidget(self.btn_solid)
+
         layout.addStretch()
 
     def _update_desc(self):
@@ -1070,7 +1086,9 @@ class MainWindow(QMainWindow):
         self.page_results.btn_gif.clicked.connect(self._generate_gif)
         self.page_results.btn_pin.clicked.connect(self._pin_run)
         self.page_results.btn_compare.clicked.connect(self._compare_runs)
+        self.page_welcome.btn_solid.clicked.connect(self._open_solid)
 
+        self._solid_window = None
         self._update_page(0)
 
     def _current_page(self):
@@ -1103,6 +1121,21 @@ class MainWindow(QMainWindow):
             is_transient = self.page_welcome.is_transient
             self.page_results.btn_3d_view.setVisible(is_3d)
             self.page_results.btn_gif.setVisible(is_transient)
+
+    def _open_solid(self):
+        """Launch the Solid Mechanics wizard in a separate window."""
+        try:
+            from solid_app import SolidWindow
+        except ImportError as exc:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Error",
+                                 f"Could not load Solid Mechanics module:\n{exc}")
+            return
+        if self._solid_window is None or not self._solid_window.isVisible():
+            self._solid_window = SolidWindow(parent=None)
+        self._solid_window.show()
+        self._solid_window.raise_()
+        self._solid_window.activateWindow()
 
     def _go_back(self):
         idx = self._current_page()

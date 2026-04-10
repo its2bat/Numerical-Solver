@@ -102,6 +102,8 @@ def solve_transient_2d(mesh: MeshResult, mat: MaterialParams,
     T_history = []
     times_anim = []
     tmax_list = []
+    tavg_list = []
+    tmin_list = []
     times_list = []
     dT_hist_list = []
     converged = False
@@ -116,6 +118,8 @@ def solve_transient_2d(mesh: MeshResult, mat: MaterialParams,
         Tn_full = np.full(Nn, bc.T_wall, dtype=float)
         Tn_full[free_idx] = Tn_free
         tmax_list.append(Tn_full.max())
+        tavg_list.append(Tn_full.mean())
+        tmin_list.append(Tn_full.min())
         times_list.append(t)
 
         if n in anim_set:
@@ -141,6 +145,8 @@ def solve_transient_2d(mesh: MeshResult, mat: MaterialParams,
             Tn_full = np.full(Nn, bc.T_wall, dtype=float)
             Tn_full[free_idx] = Tn_free
             tmax_list.append(Tn_full.max())
+            tavg_list.append(Tn_full.mean())
+            tmin_list.append(Tn_full.min())
             times_list.append(t_conv)
             T_history.append(Tn_free.copy())
             times_anim.append(t_conv)
@@ -151,6 +157,8 @@ def solve_transient_2d(mesh: MeshResult, mat: MaterialParams,
             break
 
     tmax_hist = np.array(tmax_list)
+    tavg_hist = np.array(tavg_list)
+    tmin_hist = np.array(tmin_list)
     times_arr = np.array(times_list)
 
     if bc.bc_inner == "neumann":
@@ -197,7 +205,8 @@ def solve_transient_2d(mesh: MeshResult, mat: MaterialParams,
         T=Tn_full, T_full=T_full_arr, coords_full=coords_full,
         tris_full=tris_full,
         T_min=Tn_full.min(), T_max=Tn_full.max(),
-        tmax_hist=tmax_hist, times_arr=times_arr,
+        tmax_hist=tmax_hist, tavg_hist=tavg_hist, tmin_hist=tmin_hist,
+        times_arr=times_arr,
         converged=converged, conv_step=conv_step,
         T_history=T_history, times_anim=times_anim,
         dT_hist=np.array(dT_hist_list) if dT_hist_list else None,

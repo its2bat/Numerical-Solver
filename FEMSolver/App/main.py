@@ -17,10 +17,11 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QRadioButton, QButtonGroup,
     QGroupBox, QDoubleSpinBox, QSpinBox, QPlainTextEdit,
     QProgressBar, QMessageBox, QFileDialog, QSplitter,
-    QSizePolicy, QFrame, QComboBox
+    QSizePolicy, QFrame, QComboBox, QDialog, QListWidget,
+    QListWidgetItem, QSlider, QScrollArea, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QFont, QIcon, QPalette, QColor
+from PyQt6.QtGui import QFont, QIcon, QPalette, QColor, QPixmap, QImage
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
@@ -720,6 +721,186 @@ class MeshPage(QWidget):
 
 
 # =====================================================================
+# RUN RECORD  (used by history feature)
+# =====================================================================
+
+class RunRecord:
+    """Stores a completed run for the history panel."""
+    def __init__(self, label, solver_type, summary, thumbnail_bytes,
+                 solve_result, mesh_result, timestamp):
+        self.label = label
+        self.solver_type = solver_type
+        self.summary = summary
+        self.thumbnail_bytes = thumbnail_bytes
+        self.solve_result = solve_result
+        self.mesh_result = mesh_result
+        self.timestamp = timestamp
+
+
+# =====================================================================
+# GIF SETTINGS DIALOG
+# =====================================================================
+
+class GifSettingsDialog(QDialog):
+    COLORMAPS = ["turbo", "hot", "plasma", "inferno", "viridis", "coolwarm", "RdYlBu_r"]
+    DPI_OPTIONS = [("Draft  (dpi=72)", 72), ("Normal (dpi=100)", 100), ("High   (dpi=150)", 150)]
+
+    def __init__(self, n_frames, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("GIF Settings")
+        self.setFixedSize(400, 260)
+        self._n_frames = n_frames
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        # FPS
+        fps_row = QHBoxLayout()
+        self.fps_slider = QSlider(Qt.Orientation.Horizontal)
+        self.fps_slider.setRange(2, 24)
+        self.fps_slider.setValue(8)
+        self.fps_lbl = QLabel("8 fps")
+        self.fps_lbl.setFixedWidth(50)
+        self.fps_slider.valueChanged.connect(self._fps_changed)
+        fps_row.addWidget(self.fps_slider)
+        fps_row.addWidget(self.fps_lbl)
+        form.addRow("FPS:", fps_row)
+
+        # Colormap
+        self.cmap_combo = QComboBox()
+        self.cmap_combo.addItems(self.COLORMAPS)
+        form.addRow("Colormap:", self.cmap_combo)
+
+        # Quality
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItems([o[0] for o in self.DPI_OPTIONS])
+        self.quality_combo.setCurrentIndex(1)
+        form.addRow("Quality:", self.quality_combo)
+
+        layout.addLayout(form)
+
+        self.dur_lbl = QLabel()
+        self.dur_lbl.setStyleSheet("color: #aaa; font-size: 10px;")
+        layout.addWidget(self.dur_lbl)
+        self._fps_changed(8)
+
+        btns = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_ok = QPushButton("Generate GIF")
+        btn_ok.setStyleSheet(
+            "QPushButton { background-color: #E91E63; color: white; "
+            "border-radius: 4px; padding: 8px 20px; }")
+        btn_cancel.clicked.connect(self.reject)
+        btn_ok.clicked.connect(self.accept)
+        btns.addStretch()
+        btns.addWidget(btn_cancel)
+        btns.addWidget(btn_ok)
+        layout.addLayout(btns)
+
+    def _fps_changed(self, v):
+        self.fps_lbl.setText(f"{v} fps")
+        dur = self._n_frames / max(v, 1)
+        self.dur_lbl.setText(
+            f"  {self._n_frames} frames  ·  ~{dur:.1f} s GIF at {v} fps")
+
+    def get_settings(self):
+        fps = self.fps_slider.value()
+        dpi = self.DPI_OPTIONS[self.quality_combo.currentIndex()][1]
+        return {
+            "fps": fps,
+            "duration_ms": max(1, int(1000 / fps)),
+            "cmap": self.cmap_combo.currentText(),
+            "dpi": dpi,
+        }
+
+
+# =====================================================================
+# RUN HISTORY DIALOG
+# =====================================================================
+
+class RunHistoryDialog(QDialog):
+    def __init__(self, history, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Run History")
+        self.resize(720, 460)
+        self.selected_record = None
+
+        layout = QHBoxLayout(self)
+
+        # Left: list
+        left = QVBoxLayout()
+        lbl = QLabel("Past Runs (newest first):")
+        lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        left.addWidget(lbl)
+        self.list_widget = QListWidget()
+        self.list_widget.setMinimumWidth(270)
+        for i, rec in enumerate(reversed(history)):
+            item = QListWidgetItem(
+                f"#{len(history) - i}  [{rec.timestamp}]\n"
+                f"  {rec.solver_type.upper()}  ·  {rec.label[:40]}")
+            item.setData(Qt.ItemDataRole.UserRole, rec)
+            self.list_widget.addItem(item)
+        left.addWidget(self.list_widget)
+        layout.addLayout(left)
+
+        # Right: preview + info
+        right = QVBoxLayout()
+        prev_lbl = QLabel("Preview:")
+        prev_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        right.addWidget(prev_lbl)
+
+        self.img_label = QLabel("Select a run to preview")
+        self.img_label.setFixedSize(340, 230)
+        self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.img_label.setStyleSheet(
+            "background: #1e1e1e; border: 1px solid #555; color: #888;")
+        right.addWidget(self.img_label)
+
+        self.info_text = QPlainTextEdit()
+        self.info_text.setReadOnly(True)
+        self.info_text.setFont(QFont("Consolas", 8))
+        self.info_text.setMaximumHeight(110)
+        right.addWidget(self.info_text)
+
+        btn_row = QHBoxLayout()
+        self.btn_load = QPushButton("Load This Run")
+        self.btn_load.setEnabled(False)
+        self.btn_load.setStyleSheet(
+            "QPushButton { background-color: #1565C0; color: white; "
+            "border-radius: 4px; padding: 6px 16px; }"
+            "QPushButton:disabled { background-color: #555; }")
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.reject)
+        self.btn_load.clicked.connect(self.accept)
+        btn_row.addWidget(self.btn_load)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_close)
+        right.addLayout(btn_row)
+
+        layout.addLayout(right)
+        self.list_widget.currentItemChanged.connect(self._on_select)
+
+    def _on_select(self, item, _prev):
+        if item is None:
+            return
+        rec = item.data(Qt.ItemDataRole.UserRole)
+        self.selected_record = rec
+        self.btn_load.setEnabled(True)
+        self.info_text.setPlainText(rec.summary)
+        if rec.thumbnail_bytes:
+            img = QImage.fromData(rec.thumbnail_bytes)
+            pix = QPixmap.fromImage(img).scaled(
+                340, 230,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            self.img_label.setPixmap(pix)
+        else:
+            self.img_label.setText("No preview")
+
+
+# =====================================================================
 # PAGE 4: SOLVE
 # =====================================================================
 
@@ -893,7 +1074,26 @@ class SolvePage(QWidget):
         ax_res.set_title("Convergence Monitor", color="#ddd")
         ax_res.legend(fontsize=8, facecolor="#333333", labelcolor="#ccc")
 
-        ax_tmax.plot(steps, result.tmax_hist, color="#69f0ae", lw=1.2)
+        x_vals = steps
+        x_label = "Time Step"
+
+        tavg = result.tavg_hist if (hasattr(result, 'tavg_hist') and result.tavg_hist is not None) else None
+        tmin = result.tmin_hist if (hasattr(result, 'tmin_hist') and result.tmin_hist is not None) else None
+
+        # Collect all data values to determine y range BEFORE axhlines
+        data_arrays = [a for a in [tavg, tmin] if a is not None]
+        if data_arrays:
+            all_data = np.concatenate(data_arrays)
+            y_data_min, y_data_max = all_data.min(), all_data.max()
+            y_pad = max((y_data_max - y_data_min) * 0.1, 0.01)
+            y_lo, y_hi = y_data_min - y_pad, y_data_max + y_pad
+        else:
+            y_lo, y_hi = None, None
+
+        if tavg is not None:
+            ax_tmax.plot(x_vals, tavg, color="#69f0ae", lw=1.5, label="T_avg")
+        if tmin is not None:
+            ax_tmax.plot(x_vals, tmin, color="#ffb74d", lw=1.2, ls="--", label="T_min")
         ax_tmax.axhline(bc.T_wall, color="#ef5350", ls="--", alpha=0.7,
                         label=f"T_wall={bc.T_wall}°C")
         ax_tmax.axhline(bc.Tinf, color="#42a5f5", ls="--", alpha=0.7,
@@ -901,8 +1101,13 @@ class SolvePage(QWidget):
         if result.converged:
             ax_tmax.axvline(result.conv_step, color="#69f0ae", ls="-.", alpha=0.7,
                             label=f"converged step {result.conv_step}")
-        ax_tmax.set_xlabel("Time Step", color="#ccc")
-        ax_tmax.set_ylabel("Tmax (°C)", color="#ccc")
+
+        # Lock y-axis to data range so T_wall/T_inf lines don't squash the view
+        if y_lo is not None:
+            ax_tmax.set_ylim(y_lo, y_hi)
+
+        ax_tmax.set_xlabel(x_label, color="#ccc")
+        ax_tmax.set_ylabel("Temperature (°C)", color="#ccc")
         ax_tmax.legend(fontsize=8, facecolor="#333333", labelcolor="#ccc")
 
         self.plot.fig.patch.set_facecolor("#2a2a2a")
@@ -999,6 +1204,39 @@ class ResultsPage(QWidget):
 
         layout.addLayout(btn_row)
 
+        # Second row of buttons
+        btn_row2 = QHBoxLayout()
+
+        self.btn_csv = QPushButton("Export CSV")
+        self.btn_csv.setMinimumHeight(35)
+        self.btn_csv.setStyleSheet(
+            "QPushButton { background-color: #43A047; color: white; "
+            "border-radius: 5px; padding: 8px 16px; }")
+        btn_row2.addWidget(self.btn_csv)
+
+        self.btn_pdf = QPushButton("PDF Report")
+        self.btn_pdf.setMinimumHeight(35)
+        self.btn_pdf.setStyleSheet(
+            "QPushButton { background-color: #BF360C; color: white; "
+            "border-radius: 5px; padding: 8px 16px; }")
+        btn_row2.addWidget(self.btn_pdf)
+
+        self.btn_history = QPushButton("Run History")
+        self.btn_history.setMinimumHeight(35)
+        self.btn_history.setStyleSheet(
+            "QPushButton { background-color: #5C6BC0; color: white; "
+            "border-radius: 5px; padding: 8px 16px; }")
+        btn_row2.addWidget(self.btn_history)
+
+        self.btn_indep = QPushButton("Mesh Independence")
+        self.btn_indep.setMinimumHeight(35)
+        self.btn_indep.setStyleSheet(
+            "QPushButton { background-color: #00838F; color: white; "
+            "border-radius: 5px; padding: 8px 16px; }")
+        btn_row2.addWidget(self.btn_indep)
+
+        layout.addLayout(btn_row2)
+
         # Plot area for final result
         self.plot = MplCanvas(width=7, height=5)
         layout.addWidget(self.plot)
@@ -1024,6 +1262,11 @@ class MainWindow(QMainWindow):
         self.mesh_result = None
         self.solve_result = None
         self._worker = None
+        self._run_history = []          # list[RunRecord]
+        self._indep_mode = False        # mesh independence state machine
+        self._indep_results = []
+        self._indep_level = 0
+        self._indep_factors = [2.0, 1.0, 0.5]
 
         # Central widget
         central = QWidget()
@@ -1086,6 +1329,10 @@ class MainWindow(QMainWindow):
         self.page_results.btn_gif.clicked.connect(self._generate_gif)
         self.page_results.btn_pin.clicked.connect(self._pin_run)
         self.page_results.btn_compare.clicked.connect(self._compare_runs)
+        self.page_results.btn_csv.clicked.connect(self._export_csv)
+        self.page_results.btn_pdf.clicked.connect(self._generate_pdf_report)
+        self.page_results.btn_history.clicked.connect(self._open_history)
+        self.page_results.btn_indep.clicked.connect(self._run_mesh_independence)
         self.page_welcome.btn_solid.clicked.connect(self._open_solid)
 
         self._solid_window = None
@@ -1271,6 +1518,8 @@ class MainWindow(QMainWindow):
 
         # Pre-fill results page
         self._populate_results()
+        if not self._indep_mode:
+            self._save_to_history()
 
     def _on_solve_error(self, err_msg):
         self.page_solve.progress.setVisible(False)
@@ -1305,7 +1554,13 @@ class MainWindow(QMainWindow):
         self.page_results.summary.setPlainText(summary)
 
         # Show final temperature contour on results page (always show T field)
-        if not self.page_welcome.is_3d:
+        if self.page_welcome.is_3d and is_transient:
+            # For 3D transient: show convergence plot on results page
+            _saved = self.page_solve.plot
+            self.page_solve.plot = self.page_results.plot
+            self.page_solve.show_convergence_plot(r, bc, sp)
+            self.page_solve.plot = _saved
+        elif not self.page_welcome.is_3d:
             ax = self.page_results.plot.ax
             ax.clear()
             self.page_results.plot._style_ax()
@@ -1576,14 +1831,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Data", "Transient solution needed for GIF.")
             return
 
+        n_frames = len(r.T_history) if hasattr(r, 'T_history') else 0
+        dlg = GifSettingsDialog(n_frames=n_frames, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        gif_settings = dlg.get_settings()
+
         folder = QFileDialog.getExistingDirectory(self, "Save GIF to folder")
         if not folder:
             return
 
         if self.page_welcome.is_3d:
-            self._generate_gif_3d(folder, r)
+            self._generate_gif_3d(folder, r, gif_settings)
         else:
-            self._generate_gif_2d(folder, r)
+            self._generate_gif_2d(folder, r, gif_settings)
 
     def _render_frames_to_gif(self, frames, folder, filename, duration, log):
         import io
@@ -1595,7 +1856,9 @@ class MainWindow(QMainWindow):
         QMessageBox.information(None, "GIF Saved",
                                 f"Animation saved!\n{gif_path}\n{len(frames)} frames")
 
-    def _generate_gif_2d(self, folder, r):
+    def _generate_gif_2d(self, folder, r, gif_settings=None):
+        if gif_settings is None:
+            gif_settings = {"fps": 8, "duration_ms": 125, "cmap": "turbo", "dpi": 100}
         self.page_results.console.log("Generating 2D animation GIF ...")
         QApplication.processEvents()
         try:
@@ -1624,9 +1887,13 @@ class MainWindow(QMainWindow):
             T_all = np.concatenate([v.ravel() for v in vals_all])
             T_gmin, T_gmax = float(T_all.min()), float(T_all.max())
 
+            _cmap = gif_settings["cmap"]
+            _dpi  = gif_settings["dpi"]
+            _dur  = gif_settings["duration_ms"]
+
             pil_frames = []
             for i, Z in enumerate(vals_all):
-                fig, ax = plt.subplots(figsize=(7.0, 6.0), dpi=120)
+                fig, ax = plt.subplots(figsize=(7.0, 6.0), dpi=_dpi)
                 fig.patch.set_facecolor("#1e1e1e")
                 ax.set_facecolor("#1e1e1e")
 
@@ -1640,7 +1907,7 @@ class MainWindow(QMainWindow):
                     span = zf_max - zf_min
                 lvl_frame = np.linspace(zf_min, zf_max, n_levels)
 
-                cf = ax.tricontourf(triang, Z, levels=lvl_frame, cmap="turbo")
+                cf = ax.tricontourf(triang, Z, levels=lvl_frame, cmap=_cmap)
                 cbar = fig.colorbar(cf, ax=ax, pad=0.03)
                 cbar.set_label("T (°C)", color="#ccc")
                 cbar.ax.yaxis.set_tick_params(color="#ccc")
@@ -1675,16 +1942,18 @@ class MainWindow(QMainWindow):
                     QApplication.processEvents()
 
             matplotlib.use(prev_backend)
-            self._render_frames_to_gif(pil_frames, folder, "transient_2d.gif", 120,
+            self._render_frames_to_gif(pil_frames, folder, "transient_2d.gif", _dur,
                                        self.page_results.console.log)
         except Exception as e:
             import traceback
             self.page_results.console.log(f"GIF Error: {traceback.format_exc()}")
             QMessageBox.critical(self, "GIF Error", str(e))
 
-    def _generate_gif_3d(self, folder, r):
+    def _generate_gif_3d(self, folder, r, gif_settings=None):
         """GIF for 3D transient: z=0 cross-section tricontourf frames
            + side-by-side convergence plot."""
+        if gif_settings is None:
+            gif_settings = {"fps": 6, "duration_ms": 167, "cmap": "turbo", "dpi": 100}
         self.page_results.console.log("Building 3D animation GIF (z=0 cross-section) ...")
         QApplication.processEvents()
         try:
@@ -1750,13 +2019,17 @@ class MainWindow(QMainWindow):
             has_dT = r.dT_hist is not None and len(r.dT_hist) > 0
             n_total_steps = len(r.tmax_hist)
 
+            _cmap3 = gif_settings["cmap"]
+            _dpi3  = gif_settings["dpi"]
+            _dur3  = gif_settings["duration_ms"]
+
             pil_frames = []
             for i, T_free in enumerate(r.T_history):
                 T_half_nodes = r._make_full_T(T_free)[z0_nodes]
                 T_full_nodes = np.concatenate([T_half_nodes, T_half_nodes])
 
                 fig, (ax_T, ax_conv) = plt.subplots(
-                    1, 2, figsize=(12.0, 5.5), dpi=110,
+                    1, 2, figsize=(12.0, 5.5), dpi=_dpi3,
                     gridspec_kw={"width_ratios": [1.2, 1]})
                 fig.patch.set_facecolor("#1e1e1e")
 
@@ -1769,7 +2042,7 @@ class MainWindow(QMainWindow):
                     zf_min, zf_max = mid - 0.5, mid + 0.5
                 lvl_frame = np.linspace(zf_min, zf_max, n_levels)
 
-                cf = ax_T.tricontourf(triang, T_full_nodes, levels=lvl_frame, cmap="turbo")
+                cf = ax_T.tricontourf(triang, T_full_nodes, levels=lvl_frame, cmap=_cmap3)
                 cbar = fig.colorbar(cf, ax=ax_T, pad=0.03)
                 cbar.set_label("T (°C)", color="#ccc")
                 cbar.ax.yaxis.set_tick_params(color="#ccc")
@@ -1844,7 +2117,7 @@ class MainWindow(QMainWindow):
                     QApplication.processEvents()
 
             matplotlib.use(prev_backend)
-            self._render_frames_to_gif(pil_frames, folder, "transient_3d.gif", 150,
+            self._render_frames_to_gif(pil_frames, folder, "transient_3d.gif", _dur3,
                                        self.page_results.console.log)
         except Exception as e:
             import traceback
@@ -1866,6 +2139,428 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Run Pinned",
                                 f"Run #{n} pinned.\n{label}\n\n"
                                 f"Pin another run to enable comparison.")
+
+    # ------------------------------------------------------------------
+    # CSV EXPORT
+    # ------------------------------------------------------------------
+
+    def _export_csv(self):
+        r = self.solve_result
+        if r is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export CSV", "temperature_history.csv", "CSV files (*.csv)")
+        if not path:
+            return
+        import csv, datetime
+        geom, mat, bc, _, sp = self.page_params.get_params()
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["# FEM Heat Transfer Solver — Export"])
+            w.writerow([f"# Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"])
+            w.writerow([f"# Solver: {self.page_welcome.solver_type}"])
+            w.writerow([f"# T_wall={bc.T_wall}C  T_inf={bc.Tinf}C  h={bc.h_conv}W/m2K"])
+            w.writerow([f"# k_tube={mat.k_tube}  k_paste={mat.k_paste}  k_solder={mat.k_solder}"])
+            w.writerow([])
+            if (r.times_arr is not None and r.tavg_hist is not None
+                    and r.tmin_hist is not None and r.tmax_hist is not None):
+                w.writerow(["time_s", "T_avg_C", "T_min_C", "T_max_C"])
+                for row in zip(r.times_arr, r.tavg_hist, r.tmin_hist, r.tmax_hist):
+                    w.writerow([f"{v:.6g}" for v in row])
+            else:
+                w.writerow(["solver_type", "T_min_C", "T_max_C", "q_in_W"])
+                w.writerow([self.page_welcome.solver_type,
+                            f"{r.T_min:.6g}", f"{r.T_max:.6g}", f"{r.q_in:.6g}"])
+        self.page_results.console.log(f"CSV exported → {path}")
+        QMessageBox.information(self, "CSV Saved", f"Saved:\n{path}")
+
+    # ------------------------------------------------------------------
+    # PDF REPORT
+    # ------------------------------------------------------------------
+
+    def _generate_pdf_report(self):
+        if self.solve_result is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save PDF Report", "fem_report.pdf", "PDF (*.pdf)")
+        if not path:
+            return
+        try:
+            import datetime
+            import matplotlib
+            from matplotlib.backends.backend_pdf import PdfPages
+            import matplotlib.pyplot as plt
+            from solvers.mesh_builder import compute_mesh_quality_2d
+
+            r = self.solve_result
+            m = self.mesh_result
+            geom, mat, bc, _, sp = self.page_params.get_params()
+            is_3d = self.page_welcome.is_3d
+            is_transient = self.page_welcome.is_transient
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+            with PdfPages(path) as pdf:
+                # ---- Page 1: Summary text ----
+                fig1, ax1 = plt.subplots(figsize=(8.27, 11.69))  # A4
+                ax1.set_axis_off()
+                summary_text = self.page_results.summary.toPlainText()
+                summary_text = f"FEM Heat Transfer Solver — Report\nGenerated: {now}\n\n" + summary_text
+                ax1.text(0.05, 0.95, summary_text,
+                         transform=ax1.transAxes, fontsize=10,
+                         verticalalignment="top", fontfamily="monospace",
+                         wrap=True)
+                ax1.set_title("Run Summary", fontsize=14, pad=12)
+                fig1.tight_layout()
+                pdf.savefig(fig1, bbox_inches="tight")
+                plt.close(fig1)
+
+                # ---- Page 2: Temperature field (2D only) ----
+                if not is_3d and r.coords_full is not None and r.tris_full is not None:
+                    fig2, ax2 = plt.subplots(figsize=(9, 7))
+                    triang = mtri.Triangulation(
+                        r.coords_full[:, 0], r.coords_full[:, 1], r.tris_full)
+                    cf = ax2.tricontourf(triang, r.T_full, levels=50, cmap="turbo")
+                    fig2.colorbar(cf, ax=ax2, label="T (°C)")
+                    ax2.set_aspect("equal")
+                    ax2.set_xlabel("x (m)")
+                    ax2.set_ylabel("y (m)")
+                    status = f"  [converged t={r.times_arr[-1]:.3f}s]" if (is_transient and r.converged) else ""
+                    ax2.set_title(f"Final Temperature Field{status}")
+                    ax2.grid(True, alpha=0.2)
+                    fig2.tight_layout()
+                    pdf.savefig(fig2, bbox_inches="tight")
+                    plt.close(fig2)
+
+                # ---- Page 3: Mesh quality (2D only) ----
+                if not is_3d and m is not None and m.triangles is not None:
+                    quality = compute_mesh_quality_2d(m.coords, m.triangles)
+                    ar = quality["aspect_ratio"]
+                    sk = quality["skewness"]
+
+                    fig3, (ax_ar, ax_sk) = plt.subplots(1, 2, figsize=(12, 5))
+                    fig3.suptitle("Mesh Quality Metrics", fontsize=14)
+
+                    # Aspect ratio
+                    ax_ar.hist(ar, bins=60, color="#42a5f5", edgecolor="none", alpha=0.8)
+                    ax_ar.axvline(np.mean(ar), color="#ef5350", ls="--",
+                                  label=f"mean={np.mean(ar):.2f}")
+                    ax_ar.axvline(np.percentile(ar, 95), color="#ff9800", ls=":",
+                                  label=f"P95={np.percentile(ar, 95):.2f}")
+                    ax_ar.set_xlabel("Aspect Ratio  (1=equilateral)")
+                    ax_ar.set_ylabel("Element Count")
+                    ax_ar.set_title(f"Aspect Ratio  (n={len(ar):,})")
+                    ax_ar.legend()
+                    ax_ar.grid(True, alpha=0.3)
+
+                    # Skewness
+                    ax_sk.hist(sk, bins=60, color="#69f0ae", edgecolor="none", alpha=0.8)
+                    ax_sk.axvline(np.mean(sk), color="#ef5350", ls="--",
+                                  label=f"mean={np.mean(sk):.3f}")
+                    ax_sk.axvline(np.percentile(sk, 95), color="#ff9800", ls=":",
+                                  label=f"P95={np.percentile(sk, 95):.3f}")
+                    ax_sk.set_xlabel("Skewness  (0=perfect, 1=degenerate)")
+                    ax_sk.set_ylabel("Element Count")
+                    ax_sk.set_title(f"Skewness  (n={len(sk):,})")
+                    ax_sk.legend()
+                    ax_sk.grid(True, alpha=0.3)
+
+                    # Stats annotation
+                    stats = (
+                        f"Aspect Ratio:  min={ar.min():.2f}  mean={ar.mean():.2f}"
+                        f"  max={ar.max():.2f}  P95={np.percentile(ar,95):.2f}\n"
+                        f"Skewness:      min={sk.min():.3f}  mean={sk.mean():.3f}"
+                        f"  max={sk.max():.3f}  P95={np.percentile(sk,95):.3f}\n"
+                        f"Elements > 0.5 skewness: "
+                        f"{(sk > 0.5).sum():,} ({100*(sk>0.5).mean():.1f}%)"
+                    )
+                    fig3.text(0.5, 0.01, stats, ha="center", va="bottom",
+                              fontsize=9, fontfamily="monospace")
+                    fig3.tight_layout(rect=[0, 0.08, 1, 0.95])
+                    pdf.savefig(fig3, bbox_inches="tight")
+                    plt.close(fig3)
+                elif is_3d and m is not None:
+                    fig3b, ax3b = plt.subplots(figsize=(8, 4))
+                    ax3b.set_axis_off()
+                    ax3b.text(0.5, 0.5,
+                              "3D mesh quality metrics\n(tetrahedral element analysis)\n"
+                              "not yet implemented.\n\n"
+                              f"Mesh: {m.n_nodes:,} nodes  ·  {m.n_elements:,} elements",
+                              ha="center", va="center", fontsize=13, fontfamily="monospace",
+                              transform=ax3b.transAxes)
+                    ax3b.set_title("Mesh Quality")
+                    pdf.savefig(fig3b, bbox_inches="tight")
+                    plt.close(fig3b)
+
+                # ---- Page 4: Convergence history (transient) ----
+                if is_transient and r.times_arr is not None and r.tavg_hist is not None:
+                    fig4, (ax_res, ax_t) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+                    fig4.suptitle("Convergence History", fontsize=14)
+                    steps = np.arange(len(r.tmax_hist))
+                    if r.dT_hist is not None:
+                        ax_res.semilogy(np.arange(len(r.dT_hist)), r.dT_hist,
+                                        color="#ff9800", lw=1.2, label="max|ΔT|")
+                    if sp is not None:
+                        ax_res.axhline(sp.conv_tol, color="#ef5350", ls="--",
+                                       alpha=0.8, label=f"tol={sp.conv_tol:.0e}")
+                    ax_res.set_ylabel("max|ΔT| (°C)")
+                    ax_res.legend()
+                    ax_res.grid(True, alpha=0.3, which="both")
+
+                    ax_t.plot(steps, r.tavg_hist, color="#43A047", lw=1.5, label="T_avg")
+                    ax_t.plot(steps, r.tmin_hist, color="#ffb74d", lw=1.2,
+                              ls="--", label="T_min")
+                    ax_t.axhline(bc.T_wall, color="#ef5350", ls="--", alpha=0.6,
+                                 label=f"T_wall={bc.T_wall}°C")
+                    ax_t.axhline(bc.Tinf, color="#42a5f5", ls="--", alpha=0.6,
+                                 label=f"T_inf={bc.Tinf}°C")
+                    if r.converged:
+                        ax_t.axvline(r.conv_step, color="#43A047", ls="-.",
+                                     alpha=0.7, label=f"converged step {r.conv_step}")
+                    ax_t.set_xlabel("Time Step")
+                    ax_t.set_ylabel("Temperature (°C)")
+                    ax_t.legend(fontsize=8)
+                    ax_t.grid(True, alpha=0.3)
+                    fig4.tight_layout()
+                    pdf.savefig(fig4, bbox_inches="tight")
+                    plt.close(fig4)
+
+                d = pdf.infodict()
+                d["Title"] = "FEM Heat Transfer Solver Report"
+                d["Author"] = "FEM Solver"
+                d["CreationDate"] = datetime.datetime.now()
+
+            self.page_results.console.log(f"PDF saved → {path}")
+            QMessageBox.information(self, "PDF Saved", f"Report saved:\n{path}")
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(self, "PDF Error", traceback.format_exc())
+
+    # ------------------------------------------------------------------
+    # RUN HISTORY
+    # ------------------------------------------------------------------
+
+    def _save_to_history(self):
+        if self.solve_result is None:
+            return
+        import io, datetime
+        r = self.solve_result
+        geom, mat, bc, _, sp = self.page_params.get_params()
+        label = (f"T_wall={bc.T_wall}°C  k_paste={mat.k_paste}  "
+                 f"T_min={r.T_min:.2f}  T_max={r.T_max:.2f}°C")
+        summary = self.page_results.summary.toPlainText()
+        timestamp = datetime.datetime.now().strftime("%m/%d %H:%M")
+
+        # Capture thumbnail from current results figure
+        thumbnail_bytes = b""
+        try:
+            buf = io.BytesIO()
+            self.page_results.plot.fig.savefig(
+                buf, format="png", dpi=60, bbox_inches="tight",
+                facecolor=self.page_results.plot.fig.get_facecolor())
+            thumbnail_bytes = buf.getvalue()
+            buf.close()
+        except Exception:
+            pass
+
+        rec = RunRecord(
+            label=label,
+            solver_type=self.page_welcome.solver_type,
+            summary=summary,
+            thumbnail_bytes=thumbnail_bytes,
+            solve_result=r,
+            mesh_result=self.mesh_result,
+            timestamp=timestamp,
+        )
+        self._run_history.append(rec)
+        if len(self._run_history) > 20:
+            self._run_history.pop(0)
+
+    def _open_history(self):
+        if not self._run_history:
+            QMessageBox.information(self, "Run History", "No runs in history yet.")
+            return
+        dlg = RunHistoryDialog(self._run_history, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_record is not None:
+            rec = dlg.selected_record
+            self.solve_result = rec.solve_result
+            self.mesh_result  = rec.mesh_result
+            geom, mat, bc, _, sp = self.page_params.get_params()
+            self.page_results.summary.setPlainText(rec.summary)
+            # Restore thumbnail directly
+            if rec.thumbnail_bytes:
+                img = QImage.fromData(rec.thumbnail_bytes)
+                pix = QPixmap.fromImage(img)
+                self.page_results.plot.fig.clear()
+                self.page_results.plot.canvas.draw()
+            self.page_results.console.log(f"Loaded run: {rec.label}")
+
+    # ------------------------------------------------------------------
+    # MESH INDEPENDENCE TEST
+    # ------------------------------------------------------------------
+
+    def _run_mesh_independence(self):
+        if self.mesh_result is None or self.solve_result is None:
+            QMessageBox.warning(self, "Mesh Independence",
+                                "Complete a solve first to use as the base configuration.")
+            return
+        reply = QMessageBox.question(
+            self, "Mesh Independence Test",
+            "This will run 3 solves:\n"
+            "  • Coarse  (mesh ×2)\n"
+            "  • Medium  (current mesh)\n"
+            "  • Fine    (mesh ×0.5)\n\n"
+            "This may take several minutes.\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._indep_mode = True
+        self._indep_results = []
+        self._indep_level = 0
+        self._indep_params = self.page_params.get_params()  # (geom,mat,bc,mp,sp)
+        self.page_results.btn_indep.setEnabled(False)
+        self.page_results.console.log("=== Mesh Independence Test started ===")
+        self._start_next_indep_level()
+
+    def _scale_mesh_params(self, mp, factor):
+        from solvers.params import MeshParams
+        return MeshParams(
+            h_global=mp.h_global * factor,
+            h_arc=mp.h_arc * factor,
+            h_mid=mp.h_mid * factor,
+            dist_min=mp.dist_min * factor,
+            dist_max=mp.dist_max * factor,
+        )
+
+    def _start_next_indep_level(self):
+        if self._indep_level >= len(self._indep_factors):
+            self._finish_mesh_independence()
+            return
+        factor = self._indep_factors[self._indep_level]
+        geom, mat, bc, mp, sp = self._indep_params
+        scaled_mp = self._scale_mesh_params(mp, factor)
+        level_name = ["Coarse (×2)", "Medium (×1)", "Fine (×0.5)"][self._indep_level]
+        self.page_results.console.log(
+            f"--- Level {self._indep_level+1}/3: {level_name} ---")
+
+        from solvers.mesh_builder import ensure_gmsh_initialized
+        ensure_gmsh_initialized()
+
+        worker = MeshWorker(self.page_welcome.is_3d, geom, scaled_mp)
+        worker.log_signal.connect(self.page_results.console.log)
+        worker.finished.connect(self._on_indep_mesh_done)
+        worker.error.connect(lambda e: (
+            self.page_results.console.log(f"Indep mesh error: {e}"),
+            self._finish_mesh_independence()))
+        self._worker = worker
+        worker.start()
+
+    def _on_indep_mesh_done(self, mesh_result):
+        geom, mat, bc, mp, sp = self._indep_params
+        solver_type = self.page_welcome.solver_type
+        self.page_results.console.log(
+            f"  Mesh: {mesh_result.n_nodes:,} nodes  {mesh_result.n_elements:,} elements")
+
+        worker = SolveWorker(solver_type, mesh_result, mat, bc, geom, sp)
+        worker.log_signal.connect(self.page_results.console.log)
+        worker.finished.connect(lambda res: self._on_indep_solve_done(res, mesh_result))
+        worker.error.connect(lambda e: (
+            self.page_results.console.log(f"Indep solve error: {e}"),
+            self._finish_mesh_independence()))
+        self._worker = worker
+        worker.start()
+
+    def _on_indep_solve_done(self, solve_result, mesh_result):
+        self._indep_results.append((mesh_result, solve_result))
+        self._indep_level += 1
+        self._start_next_indep_level()
+
+    def _finish_mesh_independence(self):
+        self._indep_mode = False
+        self.page_results.btn_indep.setEnabled(True)
+        results = self._indep_results
+        if len(results) < 2:
+            self.page_results.console.log("Mesh independence test incomplete.")
+            return
+        self.page_results.console.log("=== Mesh Independence Test complete ===")
+
+        # Restore the medium (base) solve as the current result
+        base_idx = min(1, len(results) - 1)
+        self.solve_result = results[base_idx][1]
+        self.mesh_result  = results[base_idx][0]
+
+        try:
+            import matplotlib
+            import matplotlib.pyplot as plt
+            prev_backend = matplotlib.get_backend()
+            matplotlib.use("QtAgg")
+
+            labels = ["Coarse (×2)", "Medium (×1)", "Fine (×0.5)"][:len(results)]
+            n_elems   = [r[0].n_elements for r in results]
+            n_nodes   = [r[0].n_nodes    for r in results]
+            t_max_fin = [r[1].T_max      for r in results]
+            t_min_fin = [r[1].T_min      for r in results]
+            t_avg_fin = [float(r[1].tavg_hist[-1]) if (
+                r[1].tavg_hist is not None and len(r[1].tavg_hist) > 0)
+                else 0.0 for r in results]
+
+            fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+            fig.patch.set_facecolor("#1e1e1e")
+            fig.suptitle("Mesh Independence Study", color="#ddd", fontsize=13)
+
+            colors = ["#ff9800", "#69f0ae", "#42a5f5"]
+
+            for ax in axes:
+                ax.set_facecolor("#1e1e1e")
+                ax.tick_params(colors="#ccc")
+                ax.grid(True, alpha=0.3)
+                for sp_ in ax.spines.values():
+                    sp_.set_color("#555")
+
+            # Panel 1: T_max vs mesh size
+            axes[0].plot(n_elems, t_max_fin, "o-", color="#ef5350", lw=2, ms=8)
+            for i, (x, y, lbl) in enumerate(zip(n_elems, t_max_fin, labels)):
+                axes[0].annotate(lbl, (x, y), textcoords="offset points",
+                                 xytext=(0, 8), ha="center", color="#ccc", fontsize=8)
+            axes[0].set_xlabel("Number of Elements", color="#ccc")
+            axes[0].set_ylabel("T_max final (°C)", color="#ccc")
+            axes[0].set_title("T_max vs Mesh Size", color="#ddd")
+
+            # Panel 2: T_avg vs mesh size
+            axes[1].plot(n_elems, t_avg_fin, "o-", color="#69f0ae", lw=2, ms=8)
+            for i, (x, y, lbl) in enumerate(zip(n_elems, t_avg_fin, labels)):
+                axes[1].annotate(lbl, (x, y), textcoords="offset points",
+                                 xytext=(0, 8), ha="center", color="#ccc", fontsize=8)
+            axes[1].set_xlabel("Number of Elements", color="#ccc")
+            axes[1].set_ylabel("T_avg final (°C)", color="#ccc")
+            axes[1].set_title("T_avg vs Mesh Size", color="#ddd")
+
+            # Panel 3: Summary table
+            axes[2].set_axis_off()
+            rows = []
+            for i, (m, r) in enumerate(results):
+                avg = float(r.tavg_hist[-1]) if (
+                    r.tavg_hist is not None and len(r.tavg_hist) > 0) else 0.0
+                rows.append([labels[i], f"{m.n_nodes:,}", f"{m.n_elements:,}",
+                             f"{r.T_min:.3f}", f"{r.T_max:.3f}", f"{avg:.3f}"])
+            tbl = axes[2].table(
+                cellText=rows,
+                colLabels=["Level", "Nodes", "Elements", "T_min", "T_max", "T_avg"],
+                loc="center", cellLoc="center")
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(8)
+            for (row, col), cell in tbl.get_celld().items():
+                cell.set_facecolor("#2a2a2a" if row > 0 else "#333")
+                cell.set_text_props(color="#ccc")
+                cell.set_edgecolor("#555")
+            axes[2].set_title("Summary", color="#ddd", pad=40)
+
+            fig.tight_layout()
+            plt.show()
+            matplotlib.use(prev_backend)
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(self, "Mesh Independence Error", traceback.format_exc())
 
     def _compare_runs(self):
         runs = self.page_results._pinned_runs

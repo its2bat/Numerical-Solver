@@ -4,6 +4,54 @@ import gmsh
 from .params import GeometryParams, MeshParams, MeshResult
 
 
+def compute_mesh_quality_2d(coords, triangles):
+    """Compute per-element mesh quality metrics for 2D triangular mesh.
+
+    Returns dict with keys:
+        aspect_ratio  – circumradius / (2*inradius);  1.0 = perfect equilateral
+        skewness      – angle-based; 0.0 = perfect, 1.0 = degenerate
+        areas         – element areas (m²)
+        n_elements    – number of triangles
+    """
+    p0 = coords[triangles[:, 0]]
+    p1 = coords[triangles[:, 1]]
+    p2 = coords[triangles[:, 2]]
+
+    # Edge lengths
+    a = np.linalg.norm(p1 - p2, axis=1)  # opposite p0
+    b = np.linalg.norm(p0 - p2, axis=1)  # opposite p1
+    c = np.linalg.norm(p0 - p1, axis=1)  # opposite p2
+
+    # Area via cross product
+    cross = ((p1[:, 0] - p0[:, 0]) * (p2[:, 1] - p0[:, 1]) -
+             (p1[:, 1] - p0[:, 1]) * (p2[:, 0] - p0[:, 0]))
+    area = 0.5 * np.abs(cross)
+
+    eps = 1e-30
+    # Aspect ratio: R_circ / (2 * r_in)
+    s = 0.5 * (a + b + c)
+    R_circ = (a * b * c) / (4.0 * area + eps)
+    r_in = area / (s + eps)
+    aspect_ratio = R_circ / (2.0 * r_in + eps)
+
+    # Skewness (angle-based): (theta_max - 60°) / (120°)
+    cos_A = np.clip((b**2 + c**2 - a**2) / (2 * b * c + eps), -1.0, 1.0)
+    cos_B = np.clip((a**2 + c**2 - b**2) / (2 * a * c + eps), -1.0, 1.0)
+    cos_C = np.clip((a**2 + b**2 - c**2) / (2 * a * b + eps), -1.0, 1.0)
+    theta_max = np.maximum(np.maximum(np.arccos(cos_A),
+                                      np.arccos(cos_B)),
+                           np.arccos(cos_C))
+    skewness = (theta_max - np.pi / 3.0) / (2.0 * np.pi / 3.0)
+    skewness = np.clip(skewness, 0.0, 1.0)
+
+    return {
+        "aspect_ratio": aspect_ratio,
+        "skewness": skewness,
+        "areas": area,
+        "n_elements": len(triangles),
+    }
+
+
 def ensure_gmsh_initialized():
     """Initialize (or re-initialize) gmsh from the main thread.
     Must be called before spawning any mesh worker thread."""

@@ -87,8 +87,8 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
 
     # Animation capture schedule (coarser than 2D due to larger mesh)
     t_dense_end = min(2.0, sp.t_end)
-    dt_dense  = max(dt * 5, 0.1)
-    dt_coarse = max(dt * 20, 1.0)
+    dt_dense  = max(dt * 2, 0.02)
+    dt_coarse = max(dt * 10, 0.5)
     _anim_targets = np.concatenate([
         np.arange(0.0, t_dense_end + 1e-12, dt_dense),
         np.arange(t_dense_end + dt_coarse, sp.t_end + 1e-12, dt_coarse)
@@ -99,6 +99,8 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
     T_history = []
     times_anim = []
     tmax_list = []
+    tavg_list = []
+    tmin_list = []
     times_list = []
     dT_hist_list = []
     converged = False
@@ -117,6 +119,8 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
             Tn_full_snap = np.full(Nn, bc.T_wall, dtype=float)
             Tn_full_snap[free_idx] = Tn_free
         tmax_list.append(Tn_full_snap.max())
+        tavg_list.append(Tn_full_snap.mean())
+        tmin_list.append(Tn_full_snap.min())
         times_list.append(t)
 
         if n in anim_set:
@@ -145,6 +149,8 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
                 Tn_full_snap = np.full(Nn, bc.T_wall, dtype=float)
                 Tn_full_snap[free_idx] = Tn_free
             tmax_list.append(Tn_full_snap.max())
+            tavg_list.append(Tn_full_snap.mean())
+            tmin_list.append(Tn_full_snap.min())
             times_list.append(t_conv)
             T_history.append(Tn_free.copy())
             times_anim.append(t_conv)
@@ -156,6 +162,8 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
             break
 
     tmax_hist = np.array(tmax_list)
+    tavg_hist = np.array(tavg_list)
+    tmin_hist = np.array(tmin_list)
     times_arr = np.array(times_list)
 
     if bc.bc_inner == "neumann":
@@ -186,7 +194,8 @@ def solve_transient_3d(mesh: MeshResult, mat: MaterialParams,
     result = SolveResult(
         T=Tn_full, T_full=T_full, coords_full=P_full, tets_full=tets_full,
         T_min=Tn_full.min(), T_max=Tn_full.max(), q_in=0.0,
-        tmax_hist=tmax_hist, times_arr=times_arr,
+        tmax_hist=tmax_hist, tavg_hist=tavg_hist, tmin_hist=tmin_hist,
+        times_arr=times_arr,
         converged=converged, conv_step=conv_step,
         T_history=T_history, times_anim=times_anim,
         dT_hist=np.array(dT_hist_list) if dT_hist_list else None,

@@ -135,4 +135,6 @@ class SolveResult:
     T_history: list = field(default_factory=list)
     times_anim: list = field(default_factory=list)
     dT_hist: object = None   # residual history for convergence plot
+    tavg_hist: object = None # average temperature history
+    tmin_hist: object = None # minimum temperature history
     info: str = ""
